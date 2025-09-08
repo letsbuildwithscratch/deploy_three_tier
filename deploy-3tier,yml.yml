@@ -1,0 +1,109 @@
+# deploy-3tier.yml
+- name: Deploy 3-tier app (Docker Compose)
+  hosts: appservers
+  become: true
+  vars_files:
+    - vault.yml        # This will be an encrypted file with sensitive variables (using ansible-vault)
+  vars:
+    project_dir: /opt/3tier-app
+    compose_file_src: files/docker-compose.yml   # copy from playbook folder/files
+    env_file_path: "{{ project_dir }}/.env"
+  tasks:
+
+    - name: Ensure apt cache is up to date (Debian/Ubuntu)
+      apt:
+        update_cache: yes
+        force_apt_get: yes
+      when: ansible_facts['os_family'] == "Debian"
+
+    - name: Install prerequisites (apt)
+      apt:
+        name:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - gnupg
+          - lsb-release
+        state: present
+      when: ansible_facts['os_family'] == "Debian"
+
+    - name: Add Docker GPG key (Debian/Ubuntu)
+      apt_key:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        state: present
+      when: ansible_facts['os_family'] == "Debian"
+
+    - name: Add Docker apt repository
+      apt_repository:
+        repo: "deb [arch=amd64] https://download.docker.com/linux/ubuntu {{ ansible_lsb.codename }} stable"
+        state: present
+      when: ansible_facts['os_family'] == "Debian"
+
+    - name: Install Docker Engine and compose plugin (Debian/Ubuntu)
+      apt:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+          - docker-compose-plugin
+        state: latest
+      when: ansible_facts['os_family'] == "Debian"
+
+    - name: Ensure docker group exists and add user (optional)
+      user:
+        name: "{{ ansible_user }}"
+        groups: docker
+        append: yes
+      ignore_errors: yes
+
+    - name: Create project directory
+      file:
+        path: "{{ project_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+
+    - name: Upload docker-compose.yml
+      copy:
+        src: "{{ compose_file_src }}"
+        dest: "{{ project_dir }}/docker-compose.yml"
+        owner: root
+        group: root
+        mode: '0644'
+
+    - name: Render runtime .env from template (contains secrets) - created from vault vars
+      template:
+        src: templates/env.j2
+        dest: "{{ env_file_path }}"
+        owner: root
+        group: root
+        mode: '0600'
+
+    - name: Ensure current directory has correct permissions
+      file:
+        path: "{{ project_dir }}"
+        mode: '0755'
+
+    - name: Pull images (docker compose pull)
+      community.docker.docker_compose:
+        project_src: "{{ project_dir }}"
+        pull: yes
+      register: compose_pull
+      failed_when: compose_pull is failed
+      changed_when: compose_pull is changed
+
+    - name: Start stack (docker compose up -d)
+      community.docker.docker_compose:
+        project_src: "{{ project_dir }}"
+        state: present
+        restarted: yes
+      register: compose_up
+
+    - name: Wait for DB to be healthy (simple wait loop)
+      wait_for:
+        host: 127.0.0.1
+        port: 5432
+        delay: 5
+        timeout: 120
+      when: compose_up is succeeded

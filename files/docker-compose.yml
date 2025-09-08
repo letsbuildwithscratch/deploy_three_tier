@@ -1,0 +1,66 @@
+# docker-compose.yml
+# Version 3.8 (works with modern docker engine + compose plugin)
+version: "3.8"
+
+services:
+  frontend:
+    image: node:18-alpine
+    container_name: frontend
+    restart: unless-stopped
+    working_dir: /app
+    volumes:
+      - ./frontend/:/app:ro            # code mounted read-only (optional) or baked into an image
+    command: ["sh", "-c", "npm install --production && npm start"]
+    ports:
+      - "3000:3000"                   # expose frontend
+    environment:
+      - NODE_ENV=production
+      - API_URL=${API_URL}            # from runtime .env
+    depends_on:
+      - backend
+    networks:
+      - app-net
+
+  backend:
+    image: python:3.11-slim
+    container_name: backend
+    restart: unless-stopped
+    working_dir: /srv/app
+    volumes:
+      - ./backend/:/srv/app:ro
+    command: ["sh", "-c", "pip install -r requirements.txt && python app.py"]
+    ports:
+      - "8000:8000"
+    environment:
+      - FLASK_ENV=production
+      - DATABASE_URL=${DATABASE_URL}  # from runtime .env (eg: postgres://user:pass@db:5432/dbname)
+      - SECRET_KEY=${SECRET_KEY}      # runtime secret for backend sessions/jwt
+    depends_on:
+      - db
+    networks:
+      - app-net
+
+  db:
+    image: postgres:15-alpine
+    container_name: db
+    restart: unless-stopped
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}  # from runtime .env
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - app-net
+
+volumes:
+  db-data:
+
+networks:
+  app-net:
+    driver: bridge
